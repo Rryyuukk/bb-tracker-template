@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>BB Tracker · Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f17; --panel: #121826; --panel2: #1a2234; --line: #232c40;
+    --text: #e6edf6; --muted: #8a97ad; --accent: #5b8cff; --accent2: #36d399;
+    --warn: #fbbf24; --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); }
+  .hidden { display: none !important; }
+
+  /* ── Login ── */
+  #login {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(1200px 600px at 50% -10%, #16203a 0%, var(--bg) 60%);
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 28px; width: 340px; box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  }
+  .card h1 { font-size: 18px; margin: 0 0 4px; }
+  .card p { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
+  input[type=password], input[type=number], select {
+    width: 100%; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); font-size: 14px; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  button {
+    cursor: pointer; border: none; border-radius: 9px; padding: 10px 14px;
+    background: var(--accent); color: #fff; font-weight: 600; font-size: 14px;
+  }
+  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  button:disabled { opacity: .6; cursor: default; }
+  .err { color: var(--bad); font-size: 13px; margin-top: 10px; min-height: 18px; }
+
+  /* ── App ── */
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 14px 22px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header .brand { font-weight: 700; letter-spacing: .3px; }
+  header .brand span { color: var(--accent); }
+  header .spacer { flex: 1; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  main { padding: 22px; max-width: 1180px; margin: 0 auto; }
+  .grid { display: grid; gap: 16px; }
+  .cards { grid-template-columns: repeat(4, 1fr); }
+  .two { grid-template-columns: 1.3fr 1fr; }
+  @media (max-width: 820px) { .cards { grid-template-columns: repeat(2,1fr); } .two { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+  }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 14px; }
+  .stat .n { font-size: 28px; font-weight: 700; }
+  .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+
+  /* funnel */
+  .funnel-row { margin-bottom: 12px; }
+  .funnel-row:last-child { margin-bottom: 0; }
+  .funnel-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
+  .funnel-head .lbl { color: var(--text); }
+  .funnel-head .val { color: var(--muted); }
+  .bar { height: 26px; background: var(--panel2); border-radius: 7px; overflow: hidden; }
+  .bar > span {
+    display: block; height: 100%;
+    background: linear-gradient(90deg, var(--accent), #7aa2ff);
+    border-radius: 7px; transition: width .4s ease;
+  }
+  .drop { font-size: 11px; color: var(--warn); margin-top: 3px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+  .ts { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ev { font-weight: 600; }
+  .feed-wrap { max-height: 420px; overflow: auto; }
+  .spark { display: flex; align-items: flex-end; gap: 3px; height: 70px; }
+  .spark > div { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .85; }
+  .notice { color: var(--muted); font-size: 13px; padding: 18px; text-align: center; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); display: inline-block; margin-right: 6px; animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+</style>
+</head>
+<body>
+
+<!-- ── Login overlay ── -->
+<div id="login">
+  <form class="card" id="loginForm">
+    <h1>BB Tracker</h1>
+    <p>Enter the dashboard password to continue.</p>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" autofocus />
+    <div class="err" id="loginErr"></div>
+    <button type="submit" id="loginBtn" style="width:100%; margin-top:8px;">Sign in</button>
+  </form>
+</div>
+
+<!-- ── App ── -->
+<div id="app" class="hidden">
+  <header>
+    <div class="brand">BB<span>·</span>Tracker</div>
+    <div class="meta" id="rangeMeta"></div>
+    <div class="spacer"></div>
+    <label class="meta" for="days">Range</label>
+    <select id="days" style="width:auto;">
+      <option value="1">24h</option>
+      <option value="7" selected>7 days</option>
+      <option value="14">14 days</option>
+      <option value="30">30 days</option>
+      <option value="90">90 days</option>
+    </select>
+    <button class="ghost" id="refreshBtn">Refresh</button>
+    <button class="ghost" id="logoutBtn">Log out</button>
+  </header>
+
+  <main>
+    <div id="dataErr" class="panel hidden" style="border-color:#5a2330;background:#241319;color:#f8b7c0;margin-bottom:16px;"></div>
+
+    <!-- top stats -->
+    <div class="grid cards" style="margin-bottom:16px;">
+      <div class="panel stat"><div class="l">Events</div><div class="n" id="s_events">—</div></div>
+      <div class="panel stat"><div class="l">Sessions</div><div class="n" id="s_sessions">—</div></div>
+      <div class="panel stat"><div class="l">Users</div><div class="n" id="s_users">—</div></div>
+      <div class="panel stat"><div class="l">CTA → Visit CR</div><div class="n" id="s_cr">—</div></div>
+    </div>
+
+    <div class="grid two" style="margin-bottom:16px;">
+      <div class="panel">
+        <h2>Funnel</h2>
+        <div id="funnel"><div class="notice">No data yet.</div></div>
+      </div>
+      <div class="panel">
+        <h2>Events / day</h2>
+        <div class="spark" id="spark"></div>
+        <div style="margin-top:14px;">
+          <h2>By device</h2>
+          <table><tbody id="byDevice"></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid two" style="margin-bottom:16px;">
+      <div class="panel">
+        <h2>Top events</h2>
+        <table>
+          <thead><tr><th>Event</th><th class="num">Count</th></tr></thead>
+          <tbody id="byEvent"></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h2>By page</h2>
+        <table>
+          <thead><tr><th>page_id</th><th class="num">Count</th></tr></thead>
+          <tbody id="byPage"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="dot"></span>Live events</h2>
+      <div class="feed-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Event</th><th>page_id</th><th>type</th><th>device</th></tr></thead>
+          <tbody id="feed"></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var fmt = function (n) { return (n == null ? '—' : Number(n).toLocaleString()); };
+  var loginEl = $('login'), appEl = $('app');
+  var feedTimer = null;
+
+  function show(el) { el.classList.remove('hidden'); }
+  function hide(el) { el.classList.add('hidden'); }
+
+  // ── Auth ──
+  $('loginForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var btn = $('loginBtn'); btn.disabled = true; $('loginErr').textContent = '';
+    fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: $('pw').value }),
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (res.ok && res.j.ok) { enterApp(); }
+        else { $('loginErr').textContent = res.j.error || 'Login failed'; }
+      })
+      .catch(function () { $('loginErr').textContent = 'Network error'; })
+      .finally(function () { btn.disabled = false; });
+  });
+
+  $('logoutBtn').addEventListener('click', function () {
+    fetch('/api/auth/logout', { method: 'POST' }).finally(function () { location.reload(); });
+  });
+
+  $('refreshBtn').addEventListener('click', loadAll);
+  $('days').addEventListener('change', loadAll);
+
+  function enterApp() {
+    hide(loginEl); show(appEl);
+    loadAll();
+    if (feedTimer) clearInterval(feedTimer);
+    feedTimer = setInterval(loadFeed, 10000); // live feed every 10s
+  }
+
+  function showDataErr(msg) {
+    var el = $('dataErr');
+    if (!msg) { hide(el); return; }
+    el.textContent = msg; show(el);
+  }
+
+  // ── Data ──
+  function loadAll() {
+    var days = $('days').value;
+    $('rangeMeta').textContent = 'last ' + days + 'd';
+    showDataErr('');
+    fetch('/api/dashboard/stats?days=' + days)
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); throw new Error('unauth'); }
+        return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+      })
+      .then(function (res) {
+        if (!res.ok) { showDataErr(errText(res.j)); return; }
+        renderStats(res.j);
+      })
+      .catch(function (e) { if (e.message !== 'unauth') showDataErr('Failed to load stats.'); });
+    loadFeed();
+  }
+
+  function errText(j) {
+    if (!j) return 'Unknown error';
+    if (j.hint) return j.error + ' — ' + j.hint;
+    var d = j.detail ? (typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)) : '';
+    return (j.error || 'Error') + (d ? ' — ' + d : '');
+  }
+
+  function renderStats(d) {
+    $('s_events').textContent = fmt(d.totals.events);
+    $('s_sessions').textContent = fmt(d.totals.sessions);
+    $('s_users').textContent = fmt(d.totals.users);
+
+    // funnel
+    var f = d.funnel || [];
+    var visits = f[0] ? f[0].count : 0;
+    var cta = 0; f.forEach(function (s) { if (s.key === 'cta_clicks') cta = s.count; });
+    $('s_cr').textContent = visits ? ((cta / visits * 100).toFixed(1) + '%') : '—';
+
+    var fhtml = f.map(function (s, i) {
+      var drop = (i > 0 && s.pctOfPrev < 100)
+        ? '<div class="drop">' + s.pctOfPrev + '% of previous step</div>' : '';
+      return '<div class="funnel-row">' +
+        '<div class="funnel-head"><span class="lbl">' + s.label + '</span>' +
+        '<span class="val">' + fmt(s.count) + ' · ' + s.pctOfTop + '%</span></div>' +
+        '<div class="bar"><span style="width:' + Math.max(s.pctOfTop, 1.5) + '%"></span></div>' +
+        drop + '</div>';
+    }).join('');
+    $('funnel').innerHTML = fhtml || '<div class="notice">No funnel data.</div>';
+
+    // sparkline
+    var ts = d.timeseries || [];
+    var max = ts.reduce(function (m, p) { return Math.max(m, p.count); }, 0) || 1;
+    $('spark').innerHTML = ts.map(function (p) {
+      var h = Math.round((p.count / max) * 100);
+      return '<div title="' + p.day + ': ' + p.count + '" style="height:' + h + '%"></div>';
+    }).join('') || '<div class="notice">No data.</div>';
+
+    $('byDevice').innerHTML = (d.byDevice || []).map(function (r) {
+      return '<tr><td>' + esc(r.device) + '</td><td class="num">' + fmt(r.count) + '</td></tr>';
+    }).join('') || '<tr><td class="notice" colspan="2">—</td></tr>';
+
+    $('byEvent').innerHTML = (d.byEvent || []).map(function (r) {
+      return '<tr><td class="ev">' + esc(r.event) + '</td><td class="num">' + fmt(r.count) + '</td></tr>';
+    }).join('') || '<tr><td class="notice" colspan="2">—</td></tr>';
+
+    $('byPage').innerHTML = (d.byPage || []).map(function (r) {
+      return '<tr><td><span class="pill">' + esc(r.page_id) + '</span></td><td class="num">' + fmt(r.count) + '</td></tr>';
+    }).join('') || '<tr><td class="notice" colspan="2">—</td></tr>';
+  }
+
+  function loadFeed() {
+    fetch('/api/dashboard/events?limit=100')
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); throw new Error('unauth'); }
+        return r.json();
+      })
+      .then(function (j) {
+        var rows = (j.events || []).map(function (e) {
+          return '<tr><td class="ts">' + esc(timeAgo(e.timestamp)) + '</td>' +
+            '<td class="ev">' + esc(e.event) + '</td>' +
+            '<td>' + (e.page_id ? '<span class="pill">' + esc(e.page_id) + '</span>' : '') + '</td>' +
+            '<td>' + esc(e.page_type || '') + '</td>' +
+            '<td>' + esc(e.device || '') + '</td></tr>';
+        }).join('');
+        $('feed').innerHTML = rows || '<tr><td class="notice" colspan="5">No events yet.</td></tr>';
+      })
+      .catch(function () {});
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function timeAgo(iso) {
+    var t = new Date(iso).getTime();
+    if (isNaN(t)) return iso || '';
+    var s = Math.round((Date.now() - t) / 1000);
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.round(s / 60) + 'm ago';
+    if (s < 86400) return Math.round(s / 3600) + 'h ago';
+    return new Date(t).toLocaleDateString();
+  }
+
+  // ── Boot: probe auth by hitting a protected route ──
+  fetch('/api/dashboard/events?limit=1').then(function (r) {
+    if (r.ok) enterApp();
+    else { show(loginEl); $('pw').focus(); }
+  }).catch(function () { show(loginEl); });
+})();
+</script>
+</body>
+</html>

@@ -1,9 +1,5 @@
 {
   "name": "bb-tracker",
   "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dashboards": "node scripts/create-dashboards.js",
-    "check": "node scripts/check-dashboards.js"
-  }
+  "private": true
 }
