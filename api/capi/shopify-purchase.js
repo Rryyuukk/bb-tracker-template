@@ -140,6 +140,11 @@ module.exports = async (req, res) => {
     const billing = order.billing_address || order.shipping_address || {};
     const noteFbc = noteAttrs.fbc || noteAttrs._fbc;
     const noteFbp = noteAttrs.fbp || noteAttrs._fbp;
+    // Checkout Champ forwards the RAW click id (fbclid), but Meta CAPI expects the
+    // formatted fbc cookie: fb.1.<click_time_ms>.<fbclid>. Reconstruct it when a
+    // preformatted fbc isn't present. eventTime is in seconds → *1000 for ms.
+    const fbclid = noteAttrs.fbclid || noteAttrs._fbclid;
+    const fbc = noteFbc || (fbclid ? `fb.1.${eventTime * 1000}.${fbclid}` : undefined);
     const metaUserData = metaPixel ? buildMetaUserData({
       email: order.email || order.customer?.email,
       phone: order.phone || order.shipping_address?.phone,
@@ -150,7 +155,7 @@ module.exports = async (req, res) => {
       state: billing.province_code,
       zip: billing.zip,
       country: billing.country_code,
-      fbc: noteFbc || undefined,
+      fbc: fbc || undefined,
       fbp: noteFbp || undefined,
       ip: clientIp(req),
       user_agent: req.headers['user-agent'],

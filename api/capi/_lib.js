@@ -263,6 +263,37 @@ async function sendCapiEvent({ pixel, eventName, eventId, eventTime, user, prope
   return { status: res.status, body: json };
 }
 
+// ─── PostHog server-side ingest ───────────────────────────────────
+// Mirror a server event into PostHog so the dashboard (which reads from
+// PostHog) sees events that never touch the browser — e.g. Shopify /
+// Checkout Champ purchases. Uses the *project* write key (phc_...), which is
+// different from the *personal* query key the dashboard uses to read.
+//   POSTHOG_PROJECT_API_KEY   project write key (phc_...)
+//   POSTHOG_INGEST_HOST       ingestion host, e.g. https://us.i.posthog.com
+// No-op (resolves { skipped: true }) when the write key isn't configured, so
+// callers can fire-and-forget without guarding.
+async function phCapture({ event, distinctId, properties, timestamp }) {
+  const apiKey = process.env.POSTHOG_PROJECT_API_KEY;
+  if (!apiKey) return { skipped: true };
+  const host = (process.env.POSTHOG_INGEST_HOST || 'https://us.i.posthog.com').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${host}/capture/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        event,
+        distinct_id: distinctId || 'server',
+        properties: properties || {},
+        timestamp: timestamp || new Date().toISOString(),
+      }),
+    });
+    return { status: res.status };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
 module.exports = {
   pixelByKey,
   pixelForPageId,
@@ -276,4 +307,5 @@ module.exports = {
   buildMetaUserData,
   sendCapiEvent,
   sendMetaCapiEvent,
+  phCapture,
 };
