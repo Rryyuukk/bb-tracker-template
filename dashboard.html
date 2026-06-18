@@ -215,11 +215,14 @@
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var fmt = function (n) { return (n == null ? '—' : Number(n).toLocaleString()); };
+  var money = function (n) {
+    return (n == null ? '—' : Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  };
   var loginEl = $('login'), appEl = $('app');
   var feedTimer = null;
 
   // In-memory cache so switching views doesn't refetch.
-  var state = { stats: null, feed: null, view: 'overview' };
+  var state = { stats: null, feed: null, campaigns: null, view: 'overview' };
 
   var VIEW_TITLES = {
     overview: 'Overview',
@@ -309,6 +312,30 @@
       })
       .catch(function (e) { if (e.message !== 'unauth') showDataErr('Failed to load stats.'); });
     loadFeed();
+    loadCampaigns();
+  }
+
+  // Loads the Meta-spend ⨝ PostHog-revenue join for the Campaigns + Sales views.
+  // Only fetched on explicit load/refresh/range-change (never on the 10s feed
+  // timer) since it hits the Meta Marketing API.
+  function loadCampaigns() {
+    var days = $('days').value;
+    state.campaigns = null;
+    if (state.view === 'campaigns' || state.view === 'sales') renderActiveView();
+    fetch('/api/dashboard/campaign-roas?days=' + days)
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); throw new Error('unauth'); }
+        return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+      })
+      .then(function (res) {
+        state.campaigns = res.ok ? res.j : { error: res.j.error || 'Error', hint: res.j.hint, detail: res.j.detail };
+        if (state.view === 'campaigns' || state.view === 'sales') renderActiveView();
+      })
+      .catch(function (e) {
+        if (e.message === 'unauth') return;
+        state.campaigns = { error: 'Failed to load campaign spend.' };
+        if (state.view === 'campaigns' || state.view === 'sales') renderActiveView();
+      });
   }
 
   function errText(j) {
@@ -517,22 +544,62 @@
   }
 
   // ── Campaigns ──
+  // Meta ad spend joined to PostHog purchase revenue by normalized campaign
+  // name (utm_campaign). Data comes from /api/dashboard/campaign-roas, cached
+  // in state.campaigns. `d` (state.stats) is unused here but kept for signature
+  // parity with the other view renderers.
   function renderCampaigns(d) {
-    // We don't yet receive utm_campaign aggregates; page_id is the closest proxy
-    // available from the current /stats response.
-    var pageRows = (d.byPage || []).map(function (r) {
-      return '<tr><td><span class="pill">' + esc(r.page_id) + '</span></td><td class="num">' + fmt(r.count) + '</td></tr>';
-    }).join('') || '<tr><td class="notice" colspan="2">—</td></tr>';
+    var c = state.campaigns;
+    if (!c) return '<div class="panel"><div class="notice">Loading campaign spend…</div></div>';
+    if (!c.totals) return '<div class="panel"><h2>Campaigns</h2><div class="notice">' + esc(errText(c)) + '</div></div>';
 
-    var proxy = '<div class="panel section-gap"><h2>Traffic by page (proxy)</h2>' +
-      '<table><thead><tr><th>page_id</th><th class="num">Events</th></tr></thead><tbody>' + pageRows + '</tbody></table></div>';
-
-    var note = '<div class="panel">' +
-      comingSoon('Campaign breakdown & campaign filter',
-        'utm_campaign / utm_source / utm_medium are captured on every event but not yet aggregated by the API. Phase 2 adds grouping by properties.utm_campaign plus a campaign filter threaded into every query. For now, page_id above is the closest available proxy.') +
+    var t = c.totals;
+    var cards = '<div class="grid cards section-gap">' +
+      statCard('Spend', money(t.spend), c.currency || '') +
+      statCard('Revenue', money(t.totalRevenue), 'matched + unattributed') +
+      statCard('Blended ROAS', t.blendedRoas == null ? '—' : (t.blendedRoas + '×')) +
+      statCard('Purchases', fmt(t.purchases)) +
       '</div>';
 
-    return proxy + note;
+    var warn = (c.warnings && c.warnings.length)
+      ? '<div class="panel section-gap" style="border-color:#5a4a23;background:#241f13;color:#f8e0b7;">' +
+        c.warnings.map(function (w) { return '<div>⚠ ' + esc(w) + '</div>'; }).join('') + '</div>'
+      : '';
+
+    var matchedRows = (c.matched || []).map(function (m) {
+      return '<tr>' +
+        '<td>' + esc(m.campaign_name) + '</td>' +
+        '<td class="num">' + money(m.spend) + '</td>' +
+        '<td class="num">' + money(m.revenue) + '</td>' +
+        '<td class="num">' + fmt(m.purchases) + '</td>' +
+        '<td class="num">' + (m.cpa == null ? '—' : money(m.cpa)) + '</td>' +
+        '<td class="num">' + (m.roas == null ? '—' : (m.roas + '×')) + '</td>' +
+        '</tr>';
+    }).join('') || '<tr><td class="notice" colspan="6">No campaigns matched by name yet.</td></tr>';
+
+    var matchedTable = '<div class="panel section-gap"><h2>Campaign ROAS <span class="sub">(matched by campaign name)</span></h2>' +
+      '<table><thead><tr><th>Campaign</th><th class="num">Spend</th><th class="num">Revenue</th><th class="num">Purchases</th><th class="num">CPA</th><th class="num">ROAS</th></tr></thead><tbody>' +
+      matchedRows + '</tbody></table></div>';
+
+    var usRows = (c.unmatchedSpend || []).map(function (m) {
+      return '<tr><td>' + esc(m.campaign_name) + '</td><td class="num">' + money(m.spend) + '</td></tr>';
+    }).join('');
+    var usTable = usRows
+      ? '<div class="panel"><h2>Spend, no matched revenue</h2>' +
+        '<table><thead><tr><th>Campaign</th><th class="num">Spend</th></tr></thead><tbody>' + usRows + '</tbody></table></div>'
+      : '';
+
+    var urRows = (c.unmatchedRevenue || []).map(function (u) {
+      return '<tr><td>' + esc(u.campaign) + '</td><td class="num">' + money(u.revenue) + '</td><td class="num">' + fmt(u.purchases) + '</td></tr>';
+    }).join('');
+    var urTable = urRows
+      ? '<div class="panel"><h2>Revenue, no matched spend</h2>' +
+        '<table><thead><tr><th>utm_campaign</th><th class="num">Revenue</th><th class="num">Purch.</th></tr></thead><tbody>' + urRows + '</tbody></table></div>'
+      : '';
+
+    var twoCol = (usTable || urTable) ? '<div class="grid two section-gap">' + usTable + urTable + '</div>' : '';
+
+    return cards + warn + matchedTable + twoCol;
   }
 
   // ── Sales ──
@@ -542,7 +609,20 @@
     var cta = (funnelStage(d, 'cta_clicks') || {}).count || 0;
     var checkoutCR = cta ? (checkouts / cta * 100).toFixed(1) + '%' : '—';
 
-    var cards = '<div class="grid cards section-gap">' +
+    // Revenue cards come from the campaign-roas join (state.campaigns); they
+    // render as '—' until both Meta spend and PostHog are configured/loaded.
+    var c = state.campaigns;
+    var t = (c && c.totals) ? c.totals : null;
+    var aov = (t && t.purchases) ? money(t.totalRevenue / t.purchases) : '—';
+
+    var revCards = '<div class="grid cards section-gap">' +
+      statCard('Revenue', t ? money(t.totalRevenue) : '—', t ? (c.currency || '') : 'needs Meta + PostHog') +
+      statCard('Ad spend', t ? money(t.spend) : '—') +
+      statCard('Blended ROAS', (t && t.blendedRoas != null) ? (t.blendedRoas + '×') : '—') +
+      statCard('AOV', aov) +
+      '</div>';
+
+    var funnelCards = '<div class="grid cards section-gap">' +
       statCard('CTA clicks', fmt(cta)) +
       statCard('Checkouts', fmt(checkouts)) +
       statCard('Purchases', fmt(purchases)) +
@@ -557,12 +637,14 @@
         : '<div class="notice">No purchase events in the recent feed yet.</div>') +
       '</div>';
 
-    var note = '<div class="panel">' +
-      comingSoon('Revenue, AOV & sales by campaign',
-        'Purchase events already carry value, currency and order_id, but the current API only counts them. Phase 2 adds revenue aggregation (sum of value, AOV, by currency / campaign / page).') +
-      '</div>';
+    var note = t
+      ? '<div class="panel"><div class="sub">Revenue is summed from PostHog purchase <code>value</code>. ROAS and AOV blend matched + unattributed revenue over Meta spend — see <strong>Campaigns</strong> for the per-campaign join and the unattributed split.</div></div>'
+      : '<div class="panel">' +
+        comingSoon('Revenue, AOV & ROAS',
+          'Revenue cards populate once both Meta spend and PostHog are configured. Open Campaigns for the per-campaign join and unattributed revenue.') +
+        '</div>';
 
-    return cards + feed + note;
+    return revCards + funnelCards + feed + note;
   }
 
   // ── Boot: probe auth by hitting a protected route ──
