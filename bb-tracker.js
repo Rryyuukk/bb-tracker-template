@@ -247,7 +247,13 @@
   // Endpoint: set via cfg.capiEndpoint (your bb-tracker Vercel deploy)
   // ═══════════════════════════════════════
   var CAPI_ENDPOINT = (cfg.capiEndpoint || '');
-  var CAPI_EVENTS = { page_init: 1, vsl_play: 1, cta_visible: 1, cta_clicked: 1, quiz_complete: 1, quiz_completed: 1, plan_selected: 1 };
+  // Events forwarded to the server endpoint. The endpoint forwards mapped events
+  // to Meta/TikTok CAPI AND mirrors every event into PostHog for the dashboard.
+  // scroll_depth + read_time_estimate don't map to any ad-platform conversion
+  // (the endpoint sends them to PostHog only) but the dashboard's Advertorial
+  // view needs them — without this they'd only reach the browser PostHog SDK,
+  // which isn't present on server-rendered funnel pages (Checkout Champ).
+  var CAPI_EVENTS = { page_init: 1, vsl_play: 1, cta_visible: 1, cta_clicked: 1, quiz_complete: 1, quiz_completed: 1, plan_selected: 1, scroll_depth: 1, read_time_estimate: 1 };
 
   function bridgeToCapi(event, data, eventId) {
     if (!CAPI_EVENTS[event]) return;

@@ -1,6 +1,7 @@
 const {
   pixelForPageId, sha256, clientIp, mapEventName, buildContents, sendCapiEvent,
   metaPixelForPageId, mapMetaEventName, buildMetaUserData, sendMetaCapiEvent,
+  phCapture,
 } = require('./_lib.js');
 
 module.exports = async (req, res) => {
@@ -19,6 +20,9 @@ module.exports = async (req, res) => {
       page_type,
       page_url,
       page_referrer,
+      session_id,
+      device_type,
+      is_returning,
       ttclid,
       ttp,
       user_id,
@@ -45,8 +49,46 @@ module.exports = async (req, res) => {
     const pixel = pixelForPageId(page_id);
     const metaPixel = metaPixelForPageId(page_id);
 
-    // Skip silently if neither platform has a mapped event/pixel for this hit
+    // ── Dashboard mirror (PostHog) ──
+    // The BB Tracker dashboard reads exclusively from PostHog. Server-rendered
+    // funnel pages (Checkout Champ, custom advertorials) have no PostHog browser
+    // SDK, so server-side ingest here is the ONLY way these bb-tracker events
+    // reach the dashboard. Record the RAW bb-tracker event name (page_init,
+    // scroll_depth, cta_clicked, cta_visible, read_time_estimate…) because the
+    // dashboard funnel/feed queries key off those names — not the mapped
+    // Meta/TikTok conversion names. Fire for EVERY event, including ones with no
+    // pixel mapping (scroll_depth, read_time_estimate) and pages with no pixel
+    // configured — and BEFORE the early return below. No-ops when
+    // POSTHOG_PROJECT_API_KEY is unset. Never throws into the request path.
+    const dashboardPromise = (event && page_id) ? phCapture({
+      event,
+      distinctId: user_id || session_id || page_id,
+      properties: {
+        page_id,
+        page_type,
+        device_type,
+        session_id,
+        user_id,
+        is_returning,
+        // event-specific fields surfaced in the dashboard (undefined drops out of JSON)
+        scroll_percent: payload.scroll_percent,
+        estimated_read_seconds: payload.estimated_read_seconds,
+        time_on_page_seconds: payload.time_on_page_seconds,
+        seconds_on_page: payload.seconds_on_page,
+        cta_text: payload.cta_text,
+        cta_href,
+        cta_pack,
+        utm_source,
+        utm_medium,
+        utm_campaign,
+        source: 'bb_tracker_capi',
+      },
+    }).catch(err => ({ error: err.message })) : Promise.resolve(null);
+
+    // Skip platform forwarding if neither platform has a mapped event/pixel for
+    // this hit — but still record it to the dashboard first.
     if ((!tiktokEvent || !pixel) && (!metaEvent || !metaPixel)) {
+      await dashboardPromise;
       return res.status(204).end();
     }
 
@@ -148,7 +190,7 @@ module.exports = async (req, res) => {
       }).catch(err => ({ status: 500, body: { error: err.message } }));
     })() : Promise.resolve(null);
 
-    const [ttResult, metaResult] = await Promise.all([tiktokPromise, metaPromise]);
+    const [ttResult, metaResult, dashResult] = await Promise.all([tiktokPromise, metaPromise, dashboardPromise]);
 
     return res.status(200).json({
       ok: (!tiktokEvent || !pixel || (ttResult?.status === 200 && ttResult?.body?.code === 0))
@@ -159,6 +201,7 @@ module.exports = async (req, res) => {
       meta_status: metaResult?.status,
       meta_response: metaResult?.body,
       meta_event: metaEvent,
+      dashboard: dashResult,
       event_id,
     });
   } catch (err) {
