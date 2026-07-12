@@ -3,6 +3,7 @@ const {
   pixelByKey, metaPixelByKey, sha256, clientIp,
   sendCapiEvent, buildMetaUserData, sendMetaCapiEvent, phCapture,
 } = require('./capi/_lib.js');
+const { recordOrder } = require('./capi/_orders.js');
 
 // ════════════════════════════════════════════════════════════════
 // Checkout Champ → Meta CAPI + TikTok CAPI + PostHog (dashboard)
@@ -41,6 +42,21 @@ const EVENT_TYPES = {
   declined:  null,
   refund:    null,
 };
+
+// ── New-sale classification (fallback when Checkout Champ can't send orderType) ──
+// CC's export mapping has no OrderType field, so we can't always rely on
+// orderType === 'NEW_SALE'. When orderType is missing we classify by the event:
+//   - NEW_SALE_EVENTS : genuine first purchases → eligible to record.
+//   - NON_NEW_SALE_EVENTS : anything that is NOT a new sale (upsell, rebill,
+//     recurring, refund, decline, cancel, void, chargeback, partial) → blocked.
+// Anything not in either set is treated as NOT a new sale (deny by default),
+// so an unknown/mislabeled event can never leak through as a purchase.
+const NEW_SALE_EVENTS = new Set(['purchase', 'sale', 'new_sale', 'newsale']);
+const NON_NEW_SALE_EVENTS = new Set([
+  'upsell', 'upsale', 'rebill', 'recurring', 'subscription',
+  'refund', 'decline', 'declined', 'void', 'chargeback',
+  'cancel', 'cancelled', 'canceled', 'cancellation', 'partial',
+]);
 
 function getParams(req) {
   const q = req.query || {};
@@ -114,6 +130,84 @@ module.exports = async (req, res) => {
     const value = Number(p.total || p.totalAmount || p.value || 0) || 0;
     const quantity = parseInt(p.quantity, 10) || 1;
     const brandInfo = pixel || metaPixel;
+
+    // ── Ingestion gate: only a COMPLETE, genuine NEW SALE becomes a purchase ──
+    // Checkout Champ reports lifecycle via orderStatus (PARTIAL → COMPLETE → …).
+    // Its export mapping has NO orderType field, so orderType is OPTIONAL here:
+    //   • order_status MUST equal COMPLETE.
+    //   • If orderType is present, it is authoritative (must be NEW_SALE).
+    //   • If orderType is missing (the norm for this account), we fall back to
+    //     the EVENT: accept only a new-sale event (Purchase/sale), and reject
+    //     any refund / rebill / upsell / recurring / cancellation / void, etc.
+    // Deny-by-default: anything not positively identified as a new sale is
+    // blocked BEFORE it reaches PostHog or Meta CAPI.
+    const orderStatus = String(p.orderStatus || p.order_status || '').toUpperCase();
+    const orderTypeRaw = String(p.orderType || p.order_type || '').toUpperCase();
+    const orderType = orderTypeRaw || null; // optional — CC can't export it
+
+    // Was an event type actually supplied? (rawType defaults to 'purchase' for
+    // the meta/tiktok event-name mapping, so we can't use it to detect "missing".)
+    const eventProvided = !!(p.event || p.event_type || p.eventType || p.type);
+    const isComplete = orderStatus === 'COMPLETE';
+    const eventIsExcluded = NON_NEW_SALE_EVENTS.has(rawType);
+    const eventIsNewSale = NEW_SALE_EVENTS.has(rawType);
+
+    let isNewSalePurchase;
+    let blockReason = null;
+    if (!isComplete) {
+      isNewSalePurchase = false;
+      blockReason = 'order_not_complete';        // e.g. PARTIAL — may complete later
+    } else if (eventProvided && eventIsExcluded) {
+      isNewSalePurchase = false;
+      blockReason = 'non_new_sale_event';        // refund / rebill / upsell / cancel / …
+    } else if (orderType) {
+      isNewSalePurchase = orderType === 'NEW_SALE';
+      if (!isNewSalePurchase) blockReason = 'non_new_sale_type';
+    } else {
+      // Fallback (CC can't export orderType): require an EXPLICIT new-sale
+      // event. Deny by default — a missing or non-new-sale event is blocked, so
+      // upsell/rebill/refund/unknown postbacks can never leak through as sales.
+      isNewSalePurchase = eventProvided && eventIsNewSale;
+      if (!isNewSalePurchase) blockReason = eventProvided ? 'event_not_new_sale' : 'event_missing';
+    }
+
+    // recordOrder() (Neon Postgres), atomically:
+    //   1. marks the order "seen" at its current status — a PARTIAL is
+    //      remembered, never permanently ignored; its next postback is
+    //      re-evaluated, so PARTIAL→COMPLETE records the purchase exactly once.
+    //   2. if this is a completed new sale, claims the one-time purchase record
+    //      keyed by orderId, so CC retries cannot create duplicates.
+    let decision;
+    try {
+      decision = await recordOrder({
+        orderId: String(orderId),
+        status: orderStatus || null,
+        orderType,
+        value,
+        currency,
+        isCompletedNewSale: isNewSalePurchase,
+      });
+    } catch (err) {
+      // Fail-closed: without the dedup store we cannot guarantee exactly-once,
+      // so ask Checkout Champ to retry rather than risk phantom/duplicate
+      // purchases. Once the store recovers, the retry records the order once.
+      console.error('[checkout-champ] orders store error:', err.message);
+      return res.status(500).json({ error: 'orders store unavailable, retry later' });
+    }
+
+    if (!decision.shouldForward) {
+      // Not a completed new sale, or a duplicate retry of an already-recorded
+      // order. Ack with 200 so CC stops retrying, but forward nothing.
+      return res.status(200).json({
+        ok: true,
+        ignored: true,
+        order_id: String(orderId),
+        order_status: orderStatus || null,
+        order_type: orderType,
+        event: rawType,
+        reason: decision.reason === 'duplicate' ? 'duplicate' : blockReason,
+      });
+    }
 
     const eventTimeSec = p.timestamp
       ? Math.floor(new Date(p.timestamp).getTime() / 1000)
