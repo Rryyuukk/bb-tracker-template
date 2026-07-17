@@ -30,6 +30,16 @@ function loadCampaignMapping() {
 }
 const CAMPAIGN_MAP = loadCampaignMapping();
 
+// ── Server-side Meta CAPI Purchase: DISABLED by default ──
+// The merchant checkout platform (Checkout Champ / Shopify) owns the single Meta
+// Purchase via its own pixel. BB Tracker must NOT forward a second Purchase from
+// here — its event_id (cc_purchase_<orderId>) can't dedup against the platform's,
+// so Meta would double-count. Deny by default.
+// Flip CHECKOUT_CHAMP_META_PURCHASE=on ONLY to make THIS endpoint the sole Meta
+// Purchase sender (i.e. when NO platform-native Meta pixel exists for the order).
+// TikTok CAPI and the PostHog dashboard mirror below are UNAFFECTED by this flag.
+const META_PURCHASE_ENABLED = /^(1|true|on|yes)$/i.test(process.env.CHECKOUT_CHAMP_META_PURCHASE || '');
+
 // Map incoming CC event type → platform event names + action source.
 // Returning null = acknowledge but don't forward (e.g. declines/refunds).
 const EVENT_TYPES = {
@@ -271,7 +281,9 @@ module.exports = async (req, res) => {
     }).catch(err => ({ status: 500, body: { error: err.message } })) : Promise.resolve(null);
 
     // ── Meta CAPI ──
-    const metaPromise = metaPixel ? (async () => {
+    // Gated OFF by default (see META_PURCHASE_ENABLED): the checkout platform's
+    // native pixel owns the Meta Purchase. Forwarding here too would double-report.
+    const metaPromise = (metaPixel && META_PURCHASE_ENABLED) ? (async () => {
       const userData = buildMetaUserData({
         email: p.email,
         phone: p.phone,
@@ -337,18 +349,22 @@ module.exports = async (req, res) => {
 
     const [ttResult, metaResult, phResult] = await Promise.all([tiktokPromise, metaPromise, phPromise]);
 
+    const metaSent = !!(metaPixel && META_PURCHASE_ENABLED);
     return res.status(200).json({
       ok: (!pixel || (ttResult?.status === 200 && ttResult?.body?.code === 0))
-        && (!metaPixel || (metaResult?.status === 200 && !metaResult?.body?.error)),
+        && (!metaSent || (metaResult?.status === 200 && !metaResult?.body?.error)),
       key,
       type: typeKey,
       tiktok_status: ttResult?.status,
       tiktok_response: ttResult?.body,
+      // Meta Purchase is off by default — CC's native integration sends it.
+      // meta_purchase_enabled=false means we deliberately skipped the Meta send.
+      meta_purchase_enabled: META_PURCHASE_ENABLED,
       meta_status: metaResult?.status,
       meta_response: metaResult?.body,
       posthog: phResult,
       order_id: String(orderId),
-      meta_event_id: metaEventId,
+      meta_event_id: metaSent ? metaEventId : null,
       tiktok_event_id: ttEventId,
     });
   } catch (err) {
